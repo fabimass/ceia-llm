@@ -1,44 +1,69 @@
-from langgraph.graph import StateGraph, END
+from typing import TypedDict, List
+from groq import Groq
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_pinecone import PineconeVectorStore
+import os
 
-class Agent:
-    
-    def __init__(self, model, tools, system=""):
-        self.system = system
-        graph = StateGraph(AgentState)
-        graph.add_node("llm", self.call_openai)
-        graph.add_node("action", self.take_action)
-        graph.add_conditional_edges(
-            "llm",
-            self.exists_action,
-            {True: "action", False: END}
+class AgentState(TypedDict):
+    question: str
+    context: List[str]
+    detector: List[str]
+    agent: str
+    llm: str
+    complete: bool
+
+
+class AgentRag:    
+    def __init__(self, index): 
+
+        # Embeddings
+        self.embed_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-mpnet-base-v2")
+        
+        # Conexión con base de datos
+        self.vstore = PineconeVectorStore(
+            embedding=self.embed_model,
+            index_name=index,
+            pinecone_api_key=os.getenv("API_KEY_PINECONE")
         )
-        graph.add_edge("action", "llm")
-        graph.set_entry_point("llm")
-        self.graph = graph.compile()
-        self.tools = {t.name: t for t in tools}
-        self.model = model.bind_tools(tools)
+       
+    def search(self, state: AgentState):
+        if "context" in state:
+            context_list = state["context"]
+        else:
+            context_list = []
+        
+        context = ""
+        results = self.vstore.similarity_search(state["question"], k=3)
+        for res in results:
+            context += res.page_content
+        
+        return { "context": context_list + [context] } 
+    
 
-    def exists_action(self, state: AgentState):
-        result = state['messages'][-1]
-        return len(result.tool_calls) > 0
+class AgentLlm:    
+    def __init__(self):
+        # Crea el cliente de GROQ
+        self.client = Groq(api_key=os.environ.get("API_KEY_GROQ"))
 
-    def call_openai(self, state: AgentState):
-        messages = state['messages']
-        if self.system:
-            messages = [SystemMessage(content=self.system)] + messages
-        message = self.model.invoke(messages)
-        return {'messages': [message]}
+    def generate(self, state: AgentState):
+        input = state["question"]
+        context = ""
+        for ctx in state["context"]:
+            context += ctx
+            
+        query = f"""
+        Contesta la siguiente pregunta en base al contexto provisto.
 
-    def take_action(self, state: AgentState):
-        tool_calls = state['messages'][-1].tool_calls
-        results = []
-        for t in tool_calls:
-            print(f"Calling: {t}")
-            if not t['name'] in self.tools:      # check for bad tool name from LLM
-                print("\n ....bad tool name....")
-                result = "bad tool name, retry"  # instruct LLM to retry if bad
-            else:
-                result = self.tools[t['name']].invoke(t['args'])
-            results.append(ToolMessage(tool_call_id=t['id'], name=t['name'], content=str(result)))
-        print("Back to the model!")
-        return {'messages': results}
+        Pregunta: {input}
+
+        Contexto: {context}
+        """
+
+        # Genera la respuesta del chatbot utilizando el modelo LLaMA 3
+        chat_completion = self.client.chat.completions.create(
+            messages=[{"role": "user", "content": query}],
+            model="llama3-8b-8192",
+        )
+        response = chat_completion.choices[0].message.content
+
+        return {"llm": response}
