@@ -16,3 +16,8 @@ respuestas generadas.
 Consigna: Implementar un sistema de agentes
 para que responda de manera eficiente dependiendo de qué
 persona se está preguntando (1 agente por persona).
+
+## Trabajo Práctico 3
+
+Consigna: Implementar una notebook para generar imágenes a
+partir de texto (text2img) utilizando un modelo open source.
